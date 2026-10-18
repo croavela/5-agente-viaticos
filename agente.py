@@ -5,7 +5,13 @@ from dotenv import load_dotenv
 from google import genai
 
 MODELO = "gemini-3.5-flash-lite"
-INSTRUCCIONES = (Path(__file__).parent / "prompts" / "sistema.md").read_text(encoding="utf-8")
+BASE = Path(__file__).parent
+DOCUMENTOS = "\n\n".join(
+    f'<documento nombre="{archivo.name}">\n{archivo.read_text(encoding="utf-8")}\n</documento>'
+    for archivo in sorted((BASE / "conocimiento").iterdir())
+    if archivo.is_file()
+)
+INSTRUCCIONES = (BASE / "prompts" / "sistema.md").read_text(encoding="utf-8") + "\n\n" + DOCUMENTOS
 
 load_dotenv()
 

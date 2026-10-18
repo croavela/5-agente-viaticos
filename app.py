@@ -6,6 +6,19 @@ st.set_page_config(page_title="Agente de viáticos", page_icon="💬")
 st.title("💬 Agente de viáticos")
 st.caption("Pregunta lo que necesites sobre tus viáticos.")
 
+# Tus mensajes a la derecha (con el avatar a ese lado); las respuestas quedan a la izquierda.
+st.markdown(
+    """
+    <style>
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        flex-direction: row-reverse;
+        text-align: right;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if "mensajes" not in st.session_state:
     st.session_state.mensajes = []
     st.session_state.interaccion_id = None
