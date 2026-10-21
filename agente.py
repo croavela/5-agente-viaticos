@@ -1,5 +1,6 @@
 import csv
 import json
+import subprocess
 import sys
 import unicodedata
 from datetime import date
@@ -12,13 +13,42 @@ MODELO = "gemini-3.5-flash-lite"
 BASE = Path(__file__).parent
 GASTOS = BASE / "conocimiento" / "gastos.csv"
 SOLICITUDES = BASE / "solicitudes.csv"
+CARPETA_SKILLS = BASE / ".claude" / "skills"
 MAX_VUELTAS = 5
 DOCUMENTOS = "\n\n".join(
     f'<documento nombre="{archivo.name}">\n{archivo.read_text(encoding="utf-8")}\n</documento>'
     for archivo in sorted((BASE / "conocimiento").iterdir())
     if archivo.is_file() and archivo.suffix == ".md"
 )
-INSTRUCCIONES = (BASE / "prompts" / "sistema.md").read_text(encoding="utf-8") + "\n\n" + DOCUMENTOS
+
+
+def leer_skills():
+    """Lee name y description del encabezado de cada .claude/skills/*/SKILL.md.
+    Devuelve {name: {"descripcion": ..., "carpeta": ...}}; ignora las que no tengan ambos campos."""
+    skills = {}
+    for archivo in sorted(CARPETA_SKILLS.glob("*/SKILL.md")):
+        partes = archivo.read_text(encoding="utf-8").split("---", 2)
+        if len(partes) < 3:
+            continue
+        campos = dict(linea.split(":", 1) for linea in partes[1].splitlines() if ":" in linea)
+        nombre, descripcion = campos.get("name", "").strip(), campos.get("description", "").strip()
+        if nombre and descripcion:
+            skills[nombre] = {"descripcion": descripcion, "carpeta": archivo.parent}
+    return skills
+
+
+SKILLS = leer_skills()
+SECCION_SKILLS = (
+    "<skills>\n"
+    "Tienes estas skills disponibles:\n"
+    + "\n".join(f"- {nombre}: {s['descripcion']}" for nombre, s in SKILLS.items())
+    + "\n\nAntes de usar una skill, cárgala con la herramienta cargar_skill y sigue sus "
+    "instrucciones; sus scripts se ejecutan con ejecutar_script. Cuando uses una skill, el "
+    "formato de esa skill reemplaza al de <formato>.\n"
+    "</skills>"
+) if SKILLS else ""
+INSTRUCCIONES = ((BASE / "prompts" / "sistema.md").read_text(encoding="utf-8") + "\n\n" + DOCUMENTOS
+                 + ("\n\n" + SECCION_SKILLS if SECCION_SKILLS else ""))
 
 load_dotenv()
 
@@ -56,7 +86,35 @@ def registrar_solicitud(empleado, ciudad, fecha_salida, noches, motivo):
     return {"radicado": radicado}
 
 
-FUNCIONES = {"sumar_gastos": sumar_gastos, "registrar_solicitud": registrar_solicitud}
+def buscar_skill(nombre):
+    if nombre not in SKILLS:
+        raise ValueError(f"No existe la skill '{nombre}'. Disponibles: {', '.join(SKILLS) or 'ninguna'}.")
+    return SKILLS[nombre]["carpeta"]
+
+
+def cargar_skill(nombre):
+    carpeta = buscar_skill(nombre)
+    print(f"[skill] cargando {nombre} ...")
+    return (carpeta / "SKILL.md").read_text(encoding="utf-8")
+
+
+def ejecutar_script(skill, script, argumento=""):
+    scripts = (buscar_skill(skill) / "scripts").resolve()
+    ruta = (scripts / script).resolve()
+    if scripts not in ruta.parents or ruta.suffix != ".py" or not ruta.is_file():
+        raise ValueError(f"Solo puedo ejecutar scripts .py de la carpeta scripts/ de la skill '{skill}'; "
+                         f"'{script}' no es uno de ellos.")
+    print(f"[script] ejecutando {skill}/{ruta.name} {argumento} ...")
+    comando = [sys.executable, str(ruta)] + ([argumento] if argumento else [])
+    proceso = subprocess.run(comando, cwd=BASE, capture_output=True, text=True,
+                             encoding="utf-8", timeout=60)
+    if proceso.returncode != 0:
+        raise RuntimeError((proceso.stderr or proceso.stdout).strip() or f"El script terminó con código {proceso.returncode}.")
+    return proceso.stdout
+
+
+FUNCIONES = {"sumar_gastos": sumar_gastos, "registrar_solicitud": registrar_solicitud,
+             "cargar_skill": cargar_skill, "ejecutar_script": ejecutar_script}
 
 HERRAMIENTAS = [
     {
@@ -96,6 +154,39 @@ HERRAMIENTAS = [
             "required": ["empleado", "ciudad", "fecha_salida", "noches", "motivo"],
         },
     },
+    {
+        "type": "function",
+        "name": "cargar_skill",
+        "description": (
+            "Devuelve el contenido de SKILL.md de una skill de la lista de <skills>. Llámala antes "
+            "de usar esa skill y sigue sus instrucciones."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre de la skill, por ejemplo revisar-gastos."},
+            },
+            "required": ["nombre"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "ejecutar_script",
+        "description": (
+            "Ejecuta con Python un script de la carpeta scripts/ de una skill y devuelve lo que "
+            "imprime. Úsala solo cuando las instrucciones de la skill (cargar_skill) lo pidan. "
+            "Solo ejecuta scripts de esa carpeta."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "skill": {"type": "string", "description": "Nombre de la skill, por ejemplo revisar-gastos."},
+                "script": {"type": "string", "description": "Nombre del archivo dentro de scripts/, por ejemplo validar.py."},
+                "argumento": {"type": "string", "description": "Argumento del script, por ejemplo la ruta de un CSV como datos/legalizacion_L-2031.csv. Omítelo si no lleva."},
+            },
+            "required": ["skill", "script"],
+        },
+    },
 ]
 
 
@@ -106,7 +197,8 @@ def ejecutar_herramienta(llamada):
         error = False
     except Exception as e:
         resultado, error = {"error": str(e)}, True
-    print(f"[herramienta] {llamada.name}({llamada.arguments}) -> {resultado}")
+    vista = str(resultado)
+    print(f"[herramienta] {llamada.name}({llamada.arguments}) -> {vista if len(vista) <= 300 else vista[:300] + '...'}")
     paso = {"type": "function_result", "call_id": llamada.id, "name": llamada.name,
             "result": json.dumps(resultado, ensure_ascii=False)}
     if error:

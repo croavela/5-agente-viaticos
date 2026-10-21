@@ -1,0 +1,6 @@
+legalizacion,empleado,ciudad,salida,regreso,id,fecha,categoria,descripcion,factura,valor_cop
+L-2032,Marcela Pineda,Medellín,2026-10-12,2026-10-14,G-301,2026-10-12,Tiquetes aéreos,Tiquete ida y vuelta a Medellín,FE-70215,480000
+L-2032,Marcela Pineda,Medellín,2026-10-12,2026-10-14,G-302,2026-10-12,Hospedaje,Noche de hotel en Medellín,FE-61840,335000
+L-2032,Marcela Pineda,Medellín,2026-10-12,2026-10-14,G-303,2026-10-13,Alimentación,"Desayuno, almuerzo y cena",FE-44127,90000
+L-2032,Marcela Pineda,Medellín,2026-10-12,2026-10-14,G-304,2026-10-13,Transporte terrestre,Taxis a reuniones,,48000
+L-2032,Marcela Pineda,Medellín,2026-10-12,2026-10-14,G-305,2026-10-14,Otros,Propina en restaurante,,15000
