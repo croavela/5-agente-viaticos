@@ -3,16 +3,17 @@ import json
 import subprocess
 import sys
 import unicodedata
-from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
 
+from bd import basedatos
+from logica import solicitudes
+
 MODELO = "gemini-3.5-flash-lite"
 BASE = Path(__file__).parent
 GASTOS = BASE / "conocimiento" / "gastos.csv"
-SOLICITUDES = BASE / "solicitudes.csv"
 CARPETA_SKILLS = BASE / ".claude" / "skills"
 MAX_VUELTAS = 5
 DOCUMENTOS = "\n\n".join(
@@ -51,6 +52,7 @@ INSTRUCCIONES = ((BASE / "prompts" / "sistema.md").read_text(encoding="utf-8") +
                  + ("\n\n" + SECCION_SKILLS if SECCION_SKILLS else ""))
 
 load_dotenv()
+basedatos.inicializar()  # abre la base de bd/ (la crea y carga kit7/ si hace falta)
 
 
 def normalizar(texto):
@@ -69,21 +71,15 @@ def sumar_gastos(area=None, estado=None):
     return {"filas": len(filas), "total_cop": sum(int(r["valor_cop"]) for r in filas)}
 
 
-def registrar_solicitud(empleado, ciudad, fecha_salida, noches, motivo):
-    existe = SOLICITUDES.exists()
-    radicado = "S-001"
-    if existe:
-        with open(SOLICITUDES, encoding="utf-8", newline="") as f:
-            radicado = f"S-{sum(1 for _ in csv.DictReader(f)) + 1:03d}"
-    with open(SOLICITUDES, "a", encoding="utf-8", newline="") as f:
-        escritor = csv.writer(f)
-        if not existe:
-            escritor.writerow(["radicado", "fecha_registro", "empleado", "ciudad",
-                               "fecha_salida", "noches", "motivo", "estado"])
-        escritor.writerow([radicado, date.today().isoformat(), empleado, ciudad,
-                           fecha_salida, int(noches), motivo,
-                           "Pendiente de aprobación del jefe inmediato"])
-    return {"radicado": radicado}
+def registrar_solicitud(nombre, ciudad, fecha_salida, noches, motivo, valor_noche, valor_tiquete):
+    """Herramienta: la lógica de logica/ valida, asigna el radicado, decide el estado y guarda."""
+    return solicitudes.registrar_solicitud(nombre, ciudad, fecha_salida, int(noches), motivo,
+                                           int(valor_noche), int(valor_tiquete))
+
+
+def consultar_mis_solicitudes(nombre):
+    """Herramienta: solicitudes ya registradas del empleado."""
+    return solicitudes.consultar_solicitudes(nombre)
 
 
 def buscar_skill(nombre):
@@ -114,7 +110,7 @@ def ejecutar_script(skill, script, argumento=""):
 
 
 FUNCIONES = {"sumar_gastos": sumar_gastos, "registrar_solicitud": registrar_solicitud,
-             "cargar_skill": cargar_skill, "ejecutar_script": ejecutar_script}
+             "consultar_mis_solicitudes": consultar_mis_solicitudes, "cargar_skill": cargar_skill, "ejecutar_script": ejecutar_script}
 
 HERRAMIENTAS = [
     {
@@ -138,20 +134,39 @@ HERRAMIENTAS = [
         "type": "function",
         "name": "registrar_solicitud",
         "description": (
-            "Registra una solicitud de viáticos y devuelve su radicado. Úsala solo cuando el "
-            "empleado pida registrar una solicitud y ya tengas los cinco datos que él te dio. "
-            "Si falta alguno, no la llames: pídelo."
+            "Registra una solicitud de viáticos y devuelve su radicado, su estado y el motivo del "
+            "estado. Úsala solo cuando el empleado pida registrar una solicitud y ya tengas los "
+            "siete datos que él te dio. Si falta alguno, no la llames: pídelo. El estado lo decide "
+            "la herramienta, no tú."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "empleado": {"type": "string", "description": "Nombre completo del empleado."},
+                "nombre": {"type": "string", "description": "Nombre completo del empleado."},
                 "ciudad": {"type": "string", "description": "Ciudad de destino."},
                 "fecha_salida": {"type": "string", "description": "Fecha de salida en formato AAAA-MM-DD."},
                 "noches": {"type": "integer", "description": "Número de noches del viaje."},
                 "motivo": {"type": "string", "description": "Motivo del viaje."},
+                "valor_noche": {"type": "integer", "description": "Valor por noche del hotel cotizado, en pesos colombianos."},
+                "valor_tiquete": {"type": "integer", "description": "Valor del tiquete, en pesos colombianos."},
             },
-            "required": ["empleado", "ciudad", "fecha_salida", "noches", "motivo"],
+            "required": ["nombre", "ciudad", "fecha_salida", "noches", "motivo", "valor_noche", "valor_tiquete"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "consultar_mis_solicitudes",
+        "description": (
+            "Devuelve las solicitudes de viáticos ya registradas de un empleado (radicado, fechas, "
+            "ciudad, noches, valores y estado). Úsala cuando pregunten por sus solicitudes, por el "
+            "estado de una solicitud o por su historial de viajes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "nombre": {"type": "string", "description": "Nombre completo del empleado."},
+            },
+            "required": ["nombre"],
         },
     },
     {
