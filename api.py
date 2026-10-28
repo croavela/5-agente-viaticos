@@ -41,6 +41,7 @@ class SolicitudRegistrada(BaseModel):
     radicado: str
     estado: str
     motivo: str
+    avisado: bool | None = Field(None, description="Si se envió el aviso por Telegram; null si el estado no lo requiere.")
 
 
 class SolicitudGuardada(BaseModel):

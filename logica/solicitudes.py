@@ -2,6 +2,7 @@
 from datetime import date
 
 from bd import basedatos
+from externos import notificaciones
 
 LIMITE_TIQUETE_DIRECTOR = 1_500_000  # política, sección 3: "más de" este valor pide al director
 LIMITE_COSTO_JEFE = 2_000_000  # nueva política: "más de" este costo estimado pide al jefe inmediato
@@ -12,6 +13,7 @@ RECHAZADA = "Rechazada"
 POR_REVISAR = "Por revisar"
 PENDIENTE_DIRECTOR = "Pendiente de director"
 PENDIENTE_JEFE = "Pendiente de jefe inmediato"
+ESTADOS_CON_AVISO = (PENDIENTE_DIRECTOR, PENDIENTE_JEFE, POR_REVISAR)  # alguien debe actuar: se avisa
 
 
 class EmpleadoNoEncontrado(ValueError):
@@ -59,7 +61,10 @@ def registrar_solicitud(nombre_empleado, ciudad, fecha_salida, noches, motivo,
                         valor_noche, valor_tiquete, fecha_radicado=None):
     """Valida la solicitud, le asigna el siguiente radicado y la guarda. La fecha de radicación
     (date o AAAA-MM-DD) es hoy si no se indica; también decide si aplica la regla del jefe inmediato.
-    Devuelve {"radicado", "estado", "motivo"}. Si el empleado no existe, lanza EmpleadoNoEncontrado."""
+    Si el estado es Pendiente de director, Pendiente de jefe o Por revisar, envía un aviso por
+    externos/notificaciones.py; un aviso fallido no deshace el guardado.
+    Devuelve {"radicado", "estado", "motivo", "avisado"} (avisado: True/False, o None si no hubo
+    que avisar). Si el empleado no existe, lanza EmpleadoNoEncontrado."""
     empleado = _buscar_empleado(nombre_empleado)
     ciudad_registrada = basedatos.buscar_ciudad(ciudad)
     tope = ciudad_registrada["tope_hospedaje"] if ciudad_registrada else None
@@ -70,7 +75,15 @@ def registrar_solicitud(nombre_empleado, ciudad, fecha_salida, noches, motivo,
         ciudad_registrada["ciudad"] if ciudad_registrada else ciudad.strip(),
         fecha_salida, noches, motivo, valor_noche, valor_tiquete, estado,
         fecha_radicado.isoformat())
-    return {"radicado": radicado, "estado": estado, "motivo": motivo_estado}
+    resultado = {"radicado": radicado, "estado": estado, "motivo": motivo_estado, "avisado": None}
+    if estado in ESTADOS_CON_AVISO:  # la solicitud ya está guardada: si el aviso falla, sigue guardada
+        resultado["avisado"] = notificaciones.enviar_aviso(
+            f"Solicitud {radicado} - {estado}\n"
+            f"Empleado: {empleado['nombre']}\n"
+            f"Destino: {ciudad.strip()}\n"
+            f"Costo estimado: {_pesos(valor_tiquete + noches * valor_noche)}\n"
+            f"Motivo: {motivo_estado}")
+    return resultado
 
 
 def consultar_solicitudes(nombre):

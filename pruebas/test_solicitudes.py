@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,6 +95,75 @@ def test_regla_nueva_costo_mayor_a_dos_millones(base, ciudad, noches, valor_noch
     registro = basedatos.buscar_ciudad(ciudad)
     tope = registro["tope_hospedaje"] if registro else None
     assert validar_solicitud(tope, noches, valor_noche, valor_tiquete, fecha)[0] == esperado
+
+
+# Avisos: en estas pruebas enviar_aviso es el falso de conftest.py (o uno que falla); nunca se llama a Telegram.
+@pytest.mark.parametrize("ciudad, noches, valor_noche, valor_tiquete, esperado", [
+    pytest.param("Bogotá", 2, 250_000, 1_620_000, PENDIENTE_DIRECTOR, id="director"),
+    pytest.param("Miami", 3, 280_000, 2_100_000, POR_REVISAR, id="por-revisar"),
+])
+def test_avisa_cuando_alguien_debe_actuar(base, avisos, ciudad, noches, valor_noche, valor_tiquete, esperado):
+    resultado = solicitudes.registrar_solicitud(
+        "Natalia Guzmán", ciudad, "2026-11-03", noches, "Prueba", valor_noche, valor_tiquete)
+    assert resultado["estado"] == esperado
+    assert resultado["avisado"] is True
+    assert len(avisos) == 1
+    texto = avisos[0]
+    costo = f"${valor_tiquete + noches * valor_noche:,}".replace(",", ".")
+    for dato in (resultado["radicado"], "Natalia Guzmán", ciudad, esperado, costo, resultado["motivo"]):
+        assert dato in texto
+
+
+def test_avisa_cuando_pide_al_jefe(base, avisos):
+    resultado = solicitudes.registrar_solicitud(
+        "Natalia Guzmán", "Barranquilla", "2026-11-10", 4, "Prueba", 240_000, 1_100_000,
+        fecha_radicado="2026-11-01")
+    assert (resultado["estado"], resultado["avisado"], len(avisos)) == (PENDIENTE_JEFE, True, 1)
+
+
+@pytest.mark.parametrize("ciudad, noches, valor_noche, valor_tiquete", [
+    pytest.param("Medellín", 2, 320_000, 1_360_000, id="aprobada"),
+    pytest.param("Bucaramanga", 3, 262_000, 390_000, id="rechazada"),
+])
+def test_no_avisa_si_esta_aprobada_o_rechazada(base, avisos, ciudad, noches, valor_noche, valor_tiquete):
+    resultado = solicitudes.registrar_solicitud(
+        "Natalia Guzmán", ciudad, "2026-11-03", noches, "Prueba", valor_noche, valor_tiquete,
+        fecha_radicado="2026-10-31")
+    assert resultado["avisado"] is None
+    assert avisos == []
+
+
+def test_si_el_aviso_falla_la_solicitud_queda_guardada(base, monkeypatch):
+    monkeypatch.setattr(solicitudes, "notificaciones", SimpleNamespace(enviar_aviso=lambda texto: False))
+    resultado = solicitudes.registrar_solicitud(
+        "Natalia Guzmán", "Miami", "2026-11-03", 3, "Prueba", 280_000, 2_100_000)
+    assert (resultado["estado"], resultado["avisado"]) == (POR_REVISAR, False)
+    guardada = solicitudes.consultar_solicitudes("Natalia Guzmán")[-1]
+    assert (guardada["radicado"], guardada["estado"]) == (resultado["radicado"], POR_REVISAR)
+
+
+def test_enviar_aviso_nunca_lanza_ni_imprime_el_token(monkeypatch, capsys):
+    from externos import notificaciones
+
+    def falla(*args, **kwargs):
+        raise ConnectionError("https://api.telegram.org/botTOKEN-SECRETO/sendMessage")
+
+    monkeypatch.setattr(notificaciones, "load_dotenv", lambda: None)
+    monkeypatch.setenv("TELEGRAM_TOKEN", "TOKEN-SECRETO")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "123")
+    monkeypatch.setattr(notificaciones.requests, "post", falla)
+    assert notificaciones.enviar_aviso("hola") is False
+    salida = capsys.readouterr().out
+    assert "TOKEN-SECRETO" not in salida and "api.telegram.org" not in salida
+    assert salida.count("\n") == 1
+
+
+def test_enviar_aviso_sin_configuracion_devuelve_false(monkeypatch):
+    from externos import notificaciones
+    monkeypatch.setattr(notificaciones, "load_dotenv", lambda: None)
+    monkeypatch.delenv("TELEGRAM_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    assert notificaciones.enviar_aviso("hola") is False
 
 
 def test_registrar_solicitud_con_fecha_de_radicacion(base):
